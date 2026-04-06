@@ -5,6 +5,7 @@ import path from 'path'
 import zlib from 'zlib'
 import { extract } from 'tar'
 import { execSync } from 'child_process'
+import axios from 'axios'
 
 const cwd = process.cwd()
 const TEMP_DIR = path.join(cwd, 'node_modules/.temp')
@@ -17,6 +18,62 @@ if (process.argv.slice(2).length !== 0) {
 if (process.env.SKIP_PREPARE === '1') {
   console.log('Skipping prepare script...')
   process.exit(0)
+}
+
+/** 直连 GitHub 困难时设置，例如：https://ghproxy.net（会与完整 github URL 拼接为 proxy/https://github.com/...） */
+const githubProxy = (process.env.SPARKLE_GITHUB_PROXY || '').trim().replace(/\/+$/, '')
+
+function gh(url) {
+  if (!githubProxy || typeof url !== 'string' || !url.startsWith('https://github.com')) {
+    return url
+  }
+  return `${githubProxy}/${url}`
+}
+
+const fetchTimeoutMs = Number(process.env.SPARKLE_FETCH_TIMEOUT_MS || '600000')
+const httpPrepare = axios.create({
+  timeout: fetchTimeoutMs,
+  validateStatus: (s) => s >= 200 && s < 300
+})
+
+function urlCandidates(url) {
+  if (githubProxy) {
+    return [gh(url), url]
+  }
+  return [url]
+}
+
+async function httpGetText(url) {
+  let lastErr
+  for (const resolved of urlCandidates(url)) {
+    try {
+      const { data } = await httpPrepare.get(resolved, { responseType: 'text' })
+      if (typeof data !== 'string') {
+        throw new Error(`unexpected response for ${resolved}`)
+      }
+      return data
+    } catch (e) {
+      lastErr = e
+    }
+  }
+  throw lastErr
+}
+
+async function httpGetBuffer(url, headers) {
+  const hdrs = headers ?? { 'Content-Type': 'application/octet-stream' }
+  let lastErr
+  for (const resolved of urlCandidates(url)) {
+    try {
+      const { data } = await httpPrepare.get(resolved, {
+        responseType: 'arraybuffer',
+        headers: hdrs
+      })
+      return Buffer.from(data)
+    } catch (e) {
+      lastErr = e
+    }
+  }
+  throw lastErr
 }
 
 /* ======= mihomo alpha======= */
@@ -39,15 +96,12 @@ const MIHOMO_ALPHA_MAP = {
 // Fetch the latest alpha release version from the version.txt file
 async function getLatestAlphaVersion() {
   try {
-    const response = await fetch(MIHOMO_ALPHA_VERSION_URL, {
-      method: 'GET'
-    })
-    let v = await response.text()
+    const v = await httpGetText(MIHOMO_ALPHA_VERSION_URL)
     MIHOMO_ALPHA_VERSION = v.trim() // Trim to remove extra whitespaces
     console.log(`Latest alpha version: ${MIHOMO_ALPHA_VERSION}`)
   } catch (error) {
     console.error('Error fetching latest alpha version:', error.message)
-    process.exit(1)
+    throw error
   }
 }
 
@@ -71,15 +125,12 @@ const MIHOMO_MAP = {
 // Fetch the latest release version from the version.txt file
 async function getLatestReleaseVersion() {
   try {
-    const response = await fetch(MIHOMO_VERSION_URL, {
-      method: 'GET'
-    })
-    let v = await response.text()
+    const v = await httpGetText(MIHOMO_VERSION_URL)
     MIHOMO_VERSION = v.trim() // Trim to remove extra whitespaces
     console.log(`Latest release version: ${MIHOMO_VERSION}`)
   } catch (error) {
     console.error('Error fetching latest release version:', error.message)
-    process.exit(1)
+    throw error
   }
 }
 
@@ -238,14 +289,10 @@ async function resolveResource(binInfo) {
  * download file and save to `path`
  */
 async function downloadFile(url, path) {
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/octet-stream' }
-  })
-  const buffer = await response.arrayBuffer()
-  fs.writeFileSync(path, new Uint8Array(buffer))
+  const buf = await httpGetBuffer(url, { 'Content-Type': 'application/octet-stream' })
+  fs.writeFileSync(path, buf)
 
-  console.log(`[INFO]: download finished "${url}"`)
+  console.log(`[INFO]: download finished "${gh(url)}"`)
 }
 
 const resolveMmdb = () =>
@@ -479,5 +526,4 @@ async function runTask() {
   return runTask()
 }
 
-runTask()
 runTask()

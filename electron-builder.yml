@@ -1,5 +1,7 @@
 appId: sparkle.app
 productName: Sparkle
+# 使用 npm 已安装的 Electron 目录，避免镜像 zip 缺文件（如 icudtl.dat）导致启动即崩溃
+electronDist: node_modules/electron/dist
 directories:
   buildResources: build
 files:
@@ -25,6 +27,8 @@ protocols:
     - 'mihomo'
     - 'sparkle'
 win:
+  # 无管理员/开发者模式时避免 winCodeSign 解压创建 symlink 失败
+  signAndEditExecutable: false
   target:
     - nsis
     - 7z
