@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { Button, ScrollShadow, Chip, Accordion, AccordionItem } from '@heroui/react'
+import { Button, ScrollShadow, Chip, Accordion, AccordionItem, Input } from '@heroui/react'
 import { IoRefresh, IoClose, IoCheckmarkCircle } from 'react-icons/io5'
 import { useGroups } from './hooks/use-groups'
 import { mihomoChangeProxy, mihomoGroupDelay, mihomoCloseConnections } from './utils/ipc'
@@ -11,6 +11,9 @@ interface TrafficData {
   down: number
 }
 
+/** 与主进程托盘原生菜单一致：列表默认只展示前若干个分组，其余靠搜索 */
+const TRAY_GROUP_LIST_LIMIT = 5
+
 const TrayMenuApp: React.FC = () => {
   const { groups, mutate } = useGroups()
   const { appConfig } = useAppConfig()
@@ -18,6 +21,8 @@ const TrayMenuApp: React.FC = () => {
 
   const [traffic, setTraffic] = useState<TrafficData>({ up: 0, down: 0 })
   const [testingGroup, setTestingGroup] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     window.electron.ipcRenderer.on('mihomoTraffic', (_e, info: TrafficData) => {
@@ -89,10 +94,26 @@ const TrayMenuApp: React.FC = () => {
     return proxy.history[proxy.history.length - 1].delay
   }
 
-  const defaultExpandedKeys = useMemo(() => {
-    if (!groups) return []
-    return groups.slice(0, 3).map((g) => g.name)
-  }, [groups])
+  const filteredGroups = useMemo(() => {
+    if (!groups?.length) return []
+    const q = search.trim().toLowerCase()
+    if (q) {
+      return groups.filter((g) => g.name.toLowerCase().includes(q))
+    }
+    return groups.slice(0, TRAY_GROUP_LIST_LIMIT)
+  }, [groups, search])
+
+  useEffect(() => {
+    if (!filteredGroups.length) {
+      setExpandedKeys(new Set())
+      return
+    }
+    if (search.trim()) {
+      setExpandedKeys(new Set(filteredGroups.map((g) => g.name)))
+    } else {
+      setExpandedKeys(new Set(filteredGroups.slice(0, 3).map((g) => g.name)))
+    }
+  }, [filteredGroups, search])
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-content1 rounded-xl border border-divider">
@@ -134,16 +155,42 @@ const TrayMenuApp: React.FC = () => {
         </div>
       </div>
 
-      <ScrollShadow className="flex-1 overflow-y-auto">
+      <ScrollShadow className="flex-1 overflow-y-auto flex flex-col min-h-0">
+        <div className="px-2 pt-2 pb-1 shrink-0 space-y-1 border-b border-divider/60">
+          <Input
+            size="sm"
+            placeholder="搜索分组名称…"
+            value={search}
+            onValueChange={setSearch}
+            isClearable
+            aria-label="搜索代理分组"
+            classNames={{
+              input: 'text-xs',
+              inputWrapper: 'h-8 min-h-8'
+            }}
+          />
+          {!search.trim() && groups && groups.length > TRAY_GROUP_LIST_LIMIT ? (
+            <p className="text-[10px] text-default-400 px-0.5 leading-snug">
+              仅显示前 {TRAY_GROUP_LIST_LIMIT} 个分组，搜索可查找其余 {groups.length - TRAY_GROUP_LIST_LIMIT}{' '}
+              个
+            </p>
+          ) : null}
+          {search.trim() && filteredGroups.length === 0 ? (
+            <p className="text-[10px] text-default-400 px-0.5">无匹配分组</p>
+          ) : null}
+        </div>
         {!groups || groups.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-default-400 text-sm">
+          <div className="flex items-center justify-center flex-1 text-default-400 text-sm">
             暂无数据
           </div>
         ) : (
           <Accordion
             selectionMode="multiple"
-            defaultExpandedKeys={defaultExpandedKeys}
-            className="px-1"
+            expandedKeys={expandedKeys}
+            onExpandedChange={(keys) => {
+              setExpandedKeys(new Set([...keys].map((k) => String(k))))
+            }}
+            className="px-1 pb-2"
             itemClasses={{
               base: 'py-0',
               title: 'text-sm font-medium',
@@ -151,7 +198,7 @@ const TrayMenuApp: React.FC = () => {
               content: 'pt-0 pb-2'
             }}
           >
-            {groups.map((group) => (
+            {filteredGroups.map((group) => (
               <AccordionItem
                 key={group.name}
                 aria-label={group.name}

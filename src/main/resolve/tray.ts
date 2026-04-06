@@ -39,6 +39,9 @@ import { applyTheme } from './theme'
 export let tray: Tray | null = null
 let customTrayWindow: BrowserWindow | null = null
 
+/** 托盘原生菜单中直接展示的代理分组数量，其余收入「其他分组」子菜单 */
+const TRAY_PROXY_GROUPS_TOP = 5
+
 function formatDelayText(delay: number): string {
   if (delay === 0) {
     return 'Timeout'
@@ -46,6 +49,64 @@ function formatDelayText(delay: number): string {
     return `${delay} ms`
   }
   return ''
+}
+
+function buildProxyGroupMenuItems(
+  groups: ControllerMixedGroup[],
+  trayProxyDelayLayout: 'same-line' | 'new-line',
+  autoCloseConnection: boolean
+): Electron.MenuItemConstructorOptions[] {
+  const isNewLine = trayProxyDelayLayout === 'new-line'
+  return groups.map((group) => {
+    const currentProxy = group.all.find((proxy) => proxy.name === group.now)
+    const delay = currentProxy?.history.length
+      ? currentProxy.history[currentProxy.history.length - 1].delay
+      : -1
+    const displayDelay = formatDelayText(delay)
+
+    return {
+      id: group.name,
+      label: isNewLine ? group.name : `${group.name}   ${displayDelay}`,
+      sublabel: isNewLine ? displayDelay : '',
+      type: 'submenu',
+      submenu: [
+        {
+          id: `${group.name}-test`,
+          label: '重新测试',
+          type: 'normal',
+          click: async (): Promise<void> => {
+            try {
+              await mihomoGroupDelay(group.name, group.testUrl)
+              ipcMain.emit('updateTrayMenu')
+            } catch (e) {
+              // ignore
+            }
+          }
+        },
+        { type: 'separator' },
+        ...group.all.map((proxy) => {
+          const proxyDelay = proxy.history.length
+            ? proxy.history[proxy.history.length - 1].delay
+            : -1
+          const proxyDisplayDelay = formatDelayText(proxyDelay)
+
+          return {
+            id: proxy.name,
+            label: isNewLine ? proxy.name : `${proxy.name}   ${proxyDisplayDelay}`,
+            sublabel: isNewLine ? proxyDisplayDelay : '',
+            type: 'radio' as const,
+            checked: proxy.name === group.now,
+            click: async (): Promise<void> => {
+              await mihomoChangeProxy(group.name, proxy.name)
+              if (autoCloseConnection) {
+                await mihomoCloseConnections()
+              }
+            }
+          }
+        })
+      ]
+    }
+  })
 }
 
 function positionCustomTrayWindow(win: BrowserWindow): void {
@@ -154,58 +215,19 @@ export const buildContextMenu = async (): Promise<Menu> => {
   if (proxyInTray && process.platform !== 'linux') {
     try {
       const groups = await mihomoGroups()
-      groupsMenu = groups.map((group) => {
-        const currentProxy = group.all.find((proxy) => proxy.name === group.now)
-        const delay = currentProxy?.history.length
-          ? currentProxy.history[currentProxy.history.length - 1].delay
-          : -1
-        const displayDelay = formatDelayText(delay)
-
-        const isNewLine = trayProxyDelayLayout === 'new-line'
-        return {
-          id: group.name,
-          label: isNewLine ? group.name : `${group.name}   ${displayDelay}`,
-          sublabel: isNewLine ? displayDelay : '',
+      const layout =
+        trayProxyDelayLayout === 'same-line' ? 'same-line' : ('new-line' as const)
+      const top = groups.slice(0, TRAY_PROXY_GROUPS_TOP)
+      const rest = groups.slice(TRAY_PROXY_GROUPS_TOP)
+      const topItems = buildProxyGroupMenuItems(top, layout, autoCloseConnection)
+      groupsMenu = [...topItems]
+      if (rest.length > 0) {
+        groupsMenu.push({
           type: 'submenu',
-          submenu: [
-            {
-              id: `${group.name}-test`,
-              label: '重新测试',
-              type: 'normal',
-              click: async (): Promise<void> => {
-                try {
-                  await mihomoGroupDelay(group.name, group.testUrl)
-                  ipcMain.emit('updateTrayMenu')
-                } catch (e) {
-                  // ignore
-                }
-              }
-            },
-            { type: 'separator' },
-            ...group.all.map((proxy) => {
-              const proxyDelay = proxy.history.length
-                ? proxy.history[proxy.history.length - 1].delay
-                : -1
-              const proxyDisplayDelay = formatDelayText(proxyDelay)
-
-              const isNewLine = trayProxyDelayLayout === 'new-line'
-              return {
-                id: proxy.name,
-                label: isNewLine ? proxy.name : `${proxy.name}   ${proxyDisplayDelay}`,
-                sublabel: isNewLine ? proxyDisplayDelay : '',
-                type: 'radio' as const,
-                checked: proxy.name === group.now,
-                click: async (): Promise<void> => {
-                  await mihomoChangeProxy(group.name, proxy.name)
-                  if (autoCloseConnection) {
-                    await mihomoCloseConnections()
-                  }
-                }
-              }
-            })
-          ]
-        }
-      })
+          label: `其他分组 (${rest.length})`,
+          submenu: buildProxyGroupMenuItems(rest, layout, autoCloseConnection)
+        })
+      }
       groupsMenu.unshift({ type: 'separator' })
     } catch (e) {
       // ignore
